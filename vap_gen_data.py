@@ -13,19 +13,32 @@ def vad_data_format(speaker1, speaker2, segment_id):
     speech_id_speaker1 = 0
     speech_id_speaker2 = 0
 
-    while(speaker1[speech_id_speaker1]['start']<segment_id*20):
-        speech_id_speaker1+=1
-    while(speech_id_speaker1 < len(speaker1) and speaker1[speech_id_speaker1]['end']<(segment_id+1)*20+2): # 2 seconds window for future voice activity
-        speaker1_segment_speech.append([speaker1[speech_id_speaker1]['start'], speaker1[speech_id_speaker1]['end']])
-        speech_id_speaker1+=1
+    segment_start_time = segment_id * 20  # Start time of the segment (e.g., 40 for segment_id=2)
+    segment_end_time = (segment_id + 1) * 20 + 2  # End time including the extra 2 seconds (e.g., 62 for segment_id=2)
 
-    while(speaker2[speech_id_speaker2]['start']<segment_id*20):
-        speech_id_speaker2+=1
-    while(speech_id_speaker2 < len(speaker2) and speaker2[speech_id_speaker2]['end']<(segment_id+1)*20+2): # 2 seconds window for future voice activity
-        speaker2_segment_speech.append([speaker2[speech_id_speaker2]['start'], speaker2[speech_id_speaker2]['end']])
-        speech_id_speaker2+=1
+    # Ensure we don't go out of range
+    while speech_id_speaker1 < len(speaker1) and speaker1[speech_id_speaker1]['start'] < segment_start_time:
+        speech_id_speaker1 += 1
+
+    while speech_id_speaker1 < len(speaker1) and speaker1[speech_id_speaker1]['end'] < segment_end_time:
+        speaker1_segment_speech.append([
+            round(speaker1[speech_id_speaker1]['start'] - segment_start_time, 6),  # Normalize to 0-22s
+            round(speaker1[speech_id_speaker1]['end'] - segment_start_time, 6)
+        ])
+        speech_id_speaker1 += 1
+
+    while speech_id_speaker2 < len(speaker2) and speaker2[speech_id_speaker2]['start'] < segment_start_time:
+        speech_id_speaker2 += 1
+
+    while speech_id_speaker2 < len(speaker2) and speaker2[speech_id_speaker2]['end'] < segment_end_time:
+        speaker2_segment_speech.append([
+            round(speaker2[speech_id_speaker2]['start'] - segment_start_time, 6),  # Normalize to 0-22s
+            round(speaker2[speech_id_speaker2]['end'] - segment_start_time, 6)
+        ])
+        speech_id_speaker2 += 1
 
     return [speaker1_segment_speech, speaker2_segment_speech]
+
 
 if __name__ == "__main__":
 
@@ -38,6 +51,9 @@ if __name__ == "__main__":
     # Load the audio file
     audio_file = args.path_audio_file
     sound = AudioSegment.from_file(audio_file)
+
+    # Convert sampling rate to 16kHz
+    sound = sound.set_frame_rate(16000)
 
     # Split the stereo audio into two mono channels
     first_speaker = sound.split_to_mono()[0]
@@ -56,25 +72,30 @@ if __name__ == "__main__":
     first_speaker_audio = read_audio(first_speaker_buffer, sampling_rate=16000)
     second_speaker_audio = read_audio(second_speaker_buffer, sampling_rate=16000)
 
-    speech_timestamps_first_speaker = get_speech_timestamps(first_speaker_audio, model,return_seconds=True)
-    speech_timestamps_second_speaker = get_speech_timestamps(second_speaker_audio, model,return_seconds=True)
+    speech_timestamps_first_speaker = get_speech_timestamps(first_speaker_audio, model,min_speech_duration_ms = 50,min_silence_duration_ms= 50,speech_pad_ms = 10,return_seconds=True)
+    speech_timestamps_second_speaker = get_speech_timestamps(second_speaker_audio, model,min_speech_duration_ms = 50,min_silence_duration_ms= 50,speech_pad_ms = 10,return_seconds=True)
 
     # Create the .csv file (input for the model training)
     csv_data = [
         ["audio_path", "start", "end", "vad_list", "session", "dataset"]
     ]
 
-    for segment_id in range(int(-(sound.duration_seconds // -20))): # The model can only take one audio segment of a maximum size of 20 seconds
-        csv_data_line = [
-            audio_file, 
-            segment_id*20, 
-            (segment_id+1)*20, 
-            vad_data_format(speech_timestamps_first_speaker, speech_timestamps_second_speaker, segment_id),
-            0, # Arbitrary
-            "sample", # Arbitrary
-            ]
-        csv_data.append(csv_data_line)
+    step = 19  # Define overlap (controls how much segments overlap)
+    segment_length = 20  # Define segment size
 
+    for segment_id in range(int(sound.duration_seconds // step)):
+        start_time = segment_id * step
+        end_time = start_time + segment_length
+
+        csv_data_line = [
+            audio_file,
+            start_time,
+            end_time,
+            vad_data_format(speech_timestamps_first_speaker, speech_timestamps_second_speaker, segment_id),
+            0,  # Arbitrary
+            "sample",  # Arbitrary
+        ]
+        csv_data.append(csv_data_line)
     with open(args.output_csv, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerows(csv_data) 
